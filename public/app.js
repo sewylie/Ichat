@@ -1,4 +1,9 @@
-const socket = io();
+const socket = io({
+  reconnection: true,
+  reconnectionAttempts: Infinity,
+  reconnectionDelay: 1000,
+  reconnectionDelayMax: 5000,
+});
 
 // Page elements
 const loginScreen = document.getElementById('login-screen');
@@ -32,6 +37,13 @@ const REACTION_EMOJIS = ['\u2764\ufe0f', '\ud83d\ude02', '\ud83d\udc4d', '\ud83d
 function join() {
   const name = usernameInput.value.trim();
   if (!name) return;
+
+  // Client-side validation too
+  if (!/^[a-zA-Z0-9 _-]+$/.test(name)) {
+    loginError.textContent = 'Only letters, numbers, spaces, underscores and hyphens allowed.';
+    return;
+  }
+
   socket.emit('join', name);
 }
 
@@ -57,6 +69,38 @@ socket.on('joined', (username) => {
 // Username already taken
 socket.on('username-taken', () => {
   loginError.textContent = 'That name is taken. Try another one!';
+});
+
+// Username invalid
+socket.on('username-invalid', () => {
+  loginError.textContent = 'Only letters, numbers, spaces, underscores and hyphens allowed.';
+});
+
+// ===== Auto-Reconnect =====
+socket.on('disconnect', () => {
+  if (myUsername) {
+    addSystemMessage('Connection lost. Reconnecting...');
+  }
+});
+
+socket.on('connect', () => {
+  // Re-join with the same username after reconnecting
+  if (myUsername) {
+    socket.emit('join', myUsername);
+    addSystemMessage('Reconnected!');
+    // Reload chat history if we were in a conversation
+    if (chattingWith) {
+      socket.emit('get-history', chattingWith);
+    }
+  }
+});
+
+// ===== User Went Offline =====
+socket.on('user-disconnected', (username) => {
+  if (username === chattingWith) {
+    addSystemMessage(username + ' went offline');
+    typingIndicator.classList.add('hidden');
+  }
 });
 
 // ===== User List =====
@@ -213,6 +257,16 @@ socket.on('private-message', (msg) => {
   }
 });
 
+// ===== System Messages =====
+function addSystemMessage(text) {
+  if (!messagesDiv) return;
+  const div = document.createElement('div');
+  div.className = 'system-message';
+  div.textContent = text;
+  messagesDiv.appendChild(div);
+  scrollToBottom();
+}
+
 // ===== Message Bubble =====
 function addMessageBubble(msg) {
   const isSent = msg.from === myUsername;
@@ -260,8 +314,9 @@ function toggleEmojiPicker(wrapper, messageId) {
   // Close any open picker
   const existing = document.querySelector('.emoji-picker');
   if (existing) {
+    const wasOnSameWrapper = existing.closest('.message-wrapper') === wrapper;
     existing.remove();
-    if (existing.parentElement === wrapper) return; // was toggling same one
+    if (wasOnSameWrapper) return; // was toggling same one
   }
 
   const picker = document.createElement('div');
@@ -302,7 +357,14 @@ function buildReactionsBar(messageId, reactions) {
     chip.className = 'reaction-chip';
     if (users.includes(myUsername)) chip.classList.add('mine');
 
-    chip.innerHTML = emoji + (users.length > 1 ? ' <span class="count">' + users.length + '</span>' : '');
+    const emojiText = document.createTextNode(emoji);
+    chip.appendChild(emojiText);
+    if (users.length > 1) {
+      const countSpan = document.createElement('span');
+      countSpan.className = 'count';
+      countSpan.textContent = users.length;
+      chip.appendChild(countSpan);
+    }
     chip.title = users.join(', ');
     chip.addEventListener('click', () => {
       socket.emit('react', { messageId, chatWith: chattingWith, emoji });
@@ -315,7 +377,15 @@ function buildReactionsBar(messageId, reactions) {
 
 // ===== Reaction Updates =====
 socket.on('reaction-update', ({ messageId, reactions }) => {
-  const wrapper = document.querySelector(`.message-wrapper[data-msg-id="${messageId}"]`);
+  // Use data attribute lookup instead of CSS selector interpolation
+  const wrappers = messagesDiv.querySelectorAll('.message-wrapper');
+  let wrapper = null;
+  for (const w of wrappers) {
+    if (w.dataset.msgId === messageId) {
+      wrapper = w;
+      break;
+    }
+  }
   if (!wrapper) return;
 
   // Remove old reactions bar

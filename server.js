@@ -26,6 +26,14 @@ io.on('connection', (socket) => {
 
   // When a user picks a username
   socket.on('join', (username) => {
+    // Validate: only allow letters, numbers, spaces, underscores, hyphens
+    if (typeof username !== 'string') return;
+    username = username.trim().slice(0, 20);
+    if (!username || !/^[a-zA-Z0-9 _-]+$/.test(username)) {
+      socket.emit('username-invalid');
+      return;
+    }
+
     // Check if username is already taken
     if (Object.values(onlineUsers).includes(username)) {
       socket.emit('username-taken');
@@ -61,10 +69,13 @@ io.on('connection', (socket) => {
       reactions: {},
     };
 
-    // Save to history
+    // Save to history (cap at 500 messages per conversation)
     const key = chatKey(from, to);
     if (!messageHistory[key]) messageHistory[key] = [];
     messageHistory[key].push(msgData);
+    if (messageHistory[key].length > 500) {
+      messageHistory[key] = messageHistory[key].slice(-500);
+    }
 
     // Send to recipient (if they're online)
     if (recipientSocketId) {
@@ -138,6 +149,7 @@ io.on('connection', (socket) => {
       console.log(`${username} left`);
       delete onlineUsers[socket.id];
       io.emit('user-list', Object.values(onlineUsers));
+      io.emit('user-disconnected', username);
     }
   });
 });
